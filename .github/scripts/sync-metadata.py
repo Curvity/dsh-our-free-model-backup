@@ -4,7 +4,7 @@
 Fixes applied:
 1. Sanitizes all @username mentions into `@username` to prevent triggering external user notifications or GitHub spam flags.
 2. Synchronizes the mirror issue's open/closed state with upstream so closed issues do NOT trigger infinite comments every 5 minutes.
-3. Enforces a 2.5-second sleep between write API calls and caps new mirror creations at MAX_CREATE_PER_RUN = 5 per run to stay well below GitHub Secondary Rate Limits.
+3. Enforces a 2.5-second sleep between write API calls and caps new mirror creations at MAX_CREATE_PER_RUN = 50 per run to stay well below GitHub Secondary Rate Limits.
 4. Tracks body SHA256 hashes in an embedded HTML marker to detect and log upstream body edits.
 """
 
@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 
 UPSTREAM_REPO = os.environ.get("UPSTREAM_REPO", "Ebony-Vinyl/dsh-our-free-model")
 GH_TOKEN = os.environ.get("GH_TOKEN", "")
-MAX_CREATE_PER_RUN = 5
+MAX_CREATE_PER_RUN = 50
 WRITE_SLEEP_SECONDS = 2.5
 
 
@@ -188,27 +188,32 @@ def main():
     mirrored = list_mirrored_issues(target_repo)
     print(f"Found {len(mirrored)} existing mirrored issues in watchdog.")
 
-    upstream_items = gh_api_request(f"repos/{UPSTREAM_REPO}/issues?state=all&sort=updated&direction=desc&per_page=50")
-    if upstream_items is None:
-        print("Upstream 404 or unreachable. Halting metadata sync.")
-        return
-
+    page = 1
     created_count = 0
-    for item in upstream_items:
-        u_num = item["number"]
-        u_state = item.get("state", "open")
-        u_title = sanitize_mentions(item.get("title", ""))
-        u_raw_body = item.get("body", "") or "*No body description provided.*"
-        u_hash = body_sha256(u_raw_body)
-        expected_title = f"[mirrored] #{u_num}: {u_title}"[:250]
+    while created_count < MAX_CREATE_PER_RUN and page <= 10:
+        upstream_items = gh_api_request(f"repos/{UPSTREAM_REPO}/issues?state=all&sort=updated&direction=desc&per_page=100&page={page}")
+        if upstream_items is None:
+            print("Upstream 404 or unreachable. Halting metadata sync.")
+            return
+        if not upstream_items:
+            break
 
-        if u_num not in mirrored:
+        for item in upstream_items:
             if created_count >= MAX_CREATE_PER_RUN:
-                continue
-            new_mirror = mirror_issue(target_repo, item)
-            if new_mirror:
-                mirrored[u_num] = new_mirror
-                created_count += 1
+                break
+            u_num = item["number"]
+            u_state = item.get("state", "open")
+            u_title = sanitize_mentions(item.get("title", ""))
+            u_raw_body = item.get("body", "") or "*No body description provided.*"
+            u_hash = body_sha256(u_raw_body)
+            expected_title = f"[mirrored] #{u_num}: {u_title}"[:250]
+
+            if u_num not in mirrored:
+                print(f"[{created_count + 1}/{MAX_CREATE_PER_RUN}] ", end="")
+                new_mirror = mirror_issue(target_repo, item)
+                if new_mirror:
+                    mirrored[u_num] = new_mirror
+                    created_count += 1
         else:
             m_issue = mirrored[u_num]
             m_target_num = m_issue["number"]
@@ -246,6 +251,10 @@ def main():
                     f"Upstream body text was modified (SHA256 `{old_hash}` -> `{u_hash}`).\n\n### New Upstream Body:\n\n{sanitize_mentions(u_raw_body)}",
                     patch_data={"body": build_mirror_body(item)},
                 )
+
+        if len(upstream_items) < 100:
+            break
+        page += 1
 
     print(f"Watchdog metadata sync cycle completed (created {created_count} new mirrors).")
 
