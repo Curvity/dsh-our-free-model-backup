@@ -4,7 +4,7 @@
 Fixes applied:
 1. Sanitizes all @username mentions into `@username` to prevent triggering external user notifications or GitHub spam flags.
 2. Synchronizes the mirror issue's open/closed state with upstream so closed issues do NOT trigger infinite comments every 5 minutes.
-3. Enforces a 2.5-second sleep between write API calls and caps new mirror creations at MAX_CREATE_PER_RUN = 200 per run to stay well below GitHub Secondary Rate Limits.
+3. Enforces a 2.5-second sleep between write API calls and caps new mirror creations at MAX_CREATE_PER_RUN = 1000 per run to stay well below GitHub Secondary Rate Limits.
 4. Tracks body SHA256 hashes in an embedded HTML marker to detect and log upstream body edits.
 """
 
@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 
 UPSTREAM_REPO = os.environ.get("UPSTREAM_REPO", "Ebony-Vinyl/dsh-our-free-model")
 GH_TOKEN = os.environ.get("GH_TOKEN", "")
-MAX_CREATE_PER_RUN = 200
+MAX_CREATE_PER_RUN = 1000
 WRITE_SLEEP_SECONDS = 2.5
 
 
@@ -101,7 +101,7 @@ def get_current_repo():
 def list_mirrored_issues(target_repo):
     mirrored = {}
     page = 1
-    while page <= 10:
+    while page <= 15:
         data = gh_api_request(f"repos/{target_repo}/issues?state=all&per_page=100&page={page}")
         if not data:
             break
@@ -209,7 +209,7 @@ def main():
 
     page = 1
     created_count = 0
-    while created_count < MAX_CREATE_PER_RUN and page <= 10:
+    while created_count < MAX_CREATE_PER_RUN and page <= 15:
         upstream_items = gh_api_request(f"repos/{UPSTREAM_REPO}/issues?state=all&sort=updated&direction=desc&per_page=100&page={page}")
         if upstream_items is None:
             print("Upstream 404 or unreachable. Halting metadata sync.")
