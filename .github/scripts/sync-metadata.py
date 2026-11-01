@@ -41,7 +41,7 @@ def body_sha256(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
 
 
-def gh_api_request(endpoint, method="GET", data=None):
+def gh_api_request(endpoint, method="GET", data=None, max_retries=3):
     url = f"https://api.github.com/{endpoint.lstrip('/')}"
     headers = {
         "Accept": "application/vnd.github+json",
@@ -51,21 +51,40 @@ def gh_api_request(endpoint, method="GET", data=None):
         headers["Authorization"] = f"Bearer {GH_TOKEN}"
 
     req_body = json.dumps(data).encode("utf-8") if data else None
-    req = urllib.request.Request(url, data=req_body, headers=headers, method=method)
 
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            content = resp.read().decode("utf-8")
-            return json.loads(content) if content else {}
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return None
-        err_text = e.read().decode("utf-8", errors="replace")
-        print(f"[API Error] {method} {url} -> {e.code}: {err_text}", file=sys.stderr)
-        if e.code in (403, 429):
-            print("[Rate Limit] Secondary rate limit hit; halting gracefully for next cycle.", file=sys.stderr)
-            sys.exit(0)
-        raise
+    for attempt in range(1, max_retries + 1):
+        try:
+            req = urllib.request.Request(url, data=req_body, headers=headers, method=method)
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                content = resp.read().decode("utf-8")
+                return json.loads(content) if content else {}
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            err_text = e.read().decode("utf-8", errors="replace")
+            print(f"[API Error] {method} {url} -> {e.code}: {err_text}", file=sys.stderr)
+            if e.code in (403, 429):
+                print("[Rate Limit] Secondary rate limit hit; halting gracefully for next cycle.", file=sys.stderr)
+                sys.exit(0)
+            if attempt == max_retries:
+                raise
+            time.sleep(2 * attempt)
+        except Exception as e:
+            print(f"[Network Warn] {method} {url} attempt {attempt}/{max_retries} failed ({e}), retrying in {2 * attempt}s...", file=sys.stderr)
+            if attempt == max_retries:
+                # 终极保底：通过本机官方 gh api CLI 执行
+                try:
+                    gh_cmd = ["gh", "api", endpoint.lstrip("/"), "-X", method]
+                    if data:
+                        p = subprocess.run(gh_cmd, input=json.dumps(data), capture_output=True, text=True, encoding="utf-8")
+                    else:
+                        p = subprocess.run(gh_cmd, capture_output=True, text=True, encoding="utf-8")
+                    if p.returncode == 0 and p.stdout.strip():
+                        return json.loads(p.stdout)
+                except Exception as ex:
+                    print(f"[GH Fallback Error] {ex}", file=sys.stderr)
+                raise
+            time.sleep(2 * attempt)
 
 
 def get_current_repo():
