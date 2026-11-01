@@ -85,7 +85,7 @@ def list_mirrored_issues(target_repo):
             if "pull_request" in item:
                 continue
             title = item.get("title", "")
-            m = re.search(r'^[mirrored]\s*#(\d+):', title)
+            m = re.search(r'^\[mirrored\]\s*#(\d+):', title)
             if m:
                 mirrored[int(m.group(1))] = item
         if len(data) < 100:
