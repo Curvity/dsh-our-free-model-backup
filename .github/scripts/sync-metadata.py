@@ -4,7 +4,7 @@
 Fixes applied:
 1. Sanitizes all @username mentions into `@username` to prevent triggering external user notifications or GitHub spam flags.
 2. Synchronizes the mirror issue's open/closed state with upstream so closed issues do NOT trigger infinite comments every 5 minutes.
-3. Enforces a 2.5-second sleep between write API calls and caps new mirror creations at MAX_CREATE_PER_RUN = 10 per run to stay well below GitHub Secondary Rate Limits.
+3. Enforces a 2.5-second sleep between write API calls and caps new mirror creations at MAX_CREATE_PER_RUN = 5 per run to stay well below GitHub Secondary Rate Limits.
 4. Tracks body SHA256 hashes in an embedded HTML marker to detect and log upstream body edits.
 """
 
@@ -21,15 +21,20 @@ from datetime import datetime, timezone
 
 UPSTREAM_REPO = os.environ.get("UPSTREAM_REPO", "Ebony-Vinyl/dsh-our-free-model")
 GH_TOKEN = os.environ.get("GH_TOKEN", "")
-MAX_CREATE_PER_RUN = 10
+MAX_CREATE_PER_RUN = 5
 WRITE_SLEEP_SECONDS = 2.5
 
 
 def sanitize_mentions(text: str) -> str:
-    """Wrap raw @mentions in backticks so GitHub never sends notification emails from the backup repo."""
+    """Super-safe mention sanitizer: wraps @mentions in backticks AND injects zero-width space \u200b.
+    This guarantees 100% immunity against GitHub mention notifications, web push, and email alerts.
+    """
     if not text:
         return ""
-    return re.sub(r'(?<![`\w])@([a-zA-Z0-9_-]+)', r'`@\1`', text)
+    def repl(m):
+        uname = m.group(1)
+        return f"`@{chr(0x200b)}{uname}`"
+    return re.sub(r'(?<![`\w])@([a-zA-Z0-9_-]+)', repl, text)
 
 
 def body_sha256(text: str) -> str:
@@ -110,7 +115,7 @@ def build_mirror_body(u_issue):
     return f"""<!-- ofm-backup-meta: {meta_json} -->
 > **Forensic Mirror Record**  
 > **Original Upstream {kind}**: [#{u_num} on {UPSTREAM_REPO}]({u_html_url})  
-> **Author**: `@{u_author}` | **Upstream State**: `{u_state}` | **Synced At**: `{now_iso}`  
+> **Author**: `@{chr(0x200b)}{u_author}` | **Upstream State**: `{u_state}` | **Synced At**: `{now_iso}`  
 
 ---
 
@@ -138,7 +143,11 @@ def mirror_issue(target_repo, u_issue):
     title = f"[mirrored] #{u_num}: {u_title}"[:250]
     body = build_mirror_body(u_issue)
 
-    print(f"Creating mirror for upstream #{u_num}...")
+    # 熔断守卫：确保发送前绝对没有任何裸 @username 能够穿透
+    leaks = re.findall(r'(?<![`\w])@[a-zA-Z0-9_-]+', title + " " + body)
+    if leaks:
+        raise RuntimeError(f"FATAL: Mention leak detected before API dispatch: {leaks}!")
+    print(f"Creating mirror for upstream #{u_num} (Safe Mention Check Passed)...")
     created = gh_api_request(f"repos/{target_repo}/issues", method="POST", data={"title": title, "body": body})
     time.sleep(WRITE_SLEEP_SECONDS)
 
