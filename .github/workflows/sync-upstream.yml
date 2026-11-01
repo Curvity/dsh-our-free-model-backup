@@ -1,0 +1,110 @@
+# This repository is an automated append-only replica of Ebony-Vinyl/dsh-our-free-model.
+# Architecture inherited from xianaldai's Forbric mod-loader watchdog.
+
+name: sync upstream watchdog
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream-watchdog
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: Ebony-Vinyl/dsh-our-free-model
+
+jobs:
+  sync-code:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync upstream commits (Append-Only Contract & CI Isolation)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          notify_alert() {
+            local title="$1"
+            local body="$2"
+            if [ "$(gh issue list --state open --search "$title in:title" --json number --jq 'length')" = 0 ]; then
+              gh issue create --title "$title" --body "$body" || true
+            fi
+          }
+
+          # 1. Dead Man's Switch: Check if upstream repository is still alive
+          if ! git ls-remote "https://github.com/${UPSTREAM_REPO}.git" HEAD >/dev/null 2>&1; then
+            notify_alert \
+              "🚨 Upstream repository is unreachable, deleted, or made private" \
+              "Automated watchdog alert: \`https://github.com/${UPSTREAM_REPO}\` returned 404 or refused connection at $(date -u). All existing mirrors, hashes, and evidence remain safely locked in this repository."
+            echo "::warning::upstream unreachable or deleted; existing clone left untouched"
+            exit 0
+          fi
+
+          # 2. Add remote and fetch
+          if ! git remote | grep -q "^upstream$"; then
+            git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          fi
+          git fetch upstream --tags || true
+
+          UPSTREAM_BRANCH="main"
+          if ! git rev-parse --verify upstream/main >/dev/null 2>&1; then
+            UPSTREAM_BRANCH="master"
+          fi
+          git fetch upstream "$UPSTREAM_BRANCH"
+
+          # 3. Merge upstream changes while strictly isolating our .github directory
+          git fetch origin main
+          git reset --hard origin/main
+
+          if ! git merge-base --is-ancestor "upstream/${UPSTREAM_BRANCH}" HEAD; then
+            git merge -X theirs --no-commit --no-ff "upstream/${UPSTREAM_BRANCH}" || true
+            # Enforce CI isolation: never allow upstream workflows to overwrite or run alongside ours
+            git checkout HEAD -- .github/
+            find .github/workflows -type f ! -name 'sync-upstream.yml' -delete || true
+            git add -A
+            if ! git diff --cached --quiet; then
+              git commit -m "chore(watchdog): mirror upstream changes at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            fi
+            git push origin main
+          else
+            echo "Already up to date with upstream/${UPSTREAM_BRANCH}."
+          fi
+
+          git push origin --tags || echo "::warning::some tags were skipped"
+
+  mirror-metadata:
+    runs-on: ubuntu-latest
+    needs: [sync-code]
+    if: ${{ !cancelled() }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run metadata & issue difference tracker
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_REPO: ${{ env.UPSTREAM_REPO }}
+        run: python .github/scripts/sync-metadata.py

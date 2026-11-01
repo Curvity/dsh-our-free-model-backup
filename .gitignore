@@ -43,3 +43,17 @@ packages/desktop/src-tauri/.node-license-cache/
 packages/desktop/node_modules/
 
 _audit/
+
+# Curvity Watchdog OpSec Rules
+.DS_Store
+Thumbs.db
+desktop.ini
+__pycache__/
+*.py[cod]
+*.tmp
+.env
+.env.*
+*cookie*
+*session*
+*token*
+*secret*
