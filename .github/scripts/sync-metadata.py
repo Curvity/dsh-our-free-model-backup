@@ -4,7 +4,7 @@
 Fixes applied:
 1. Sanitizes all @username mentions into `@username` to prevent triggering external user notifications or GitHub spam flags.
 2. Synchronizes the mirror issue's open/closed state with upstream so closed issues do NOT trigger infinite comments every 5 minutes.
-3. Enforces a 2.5-second sleep between write API calls and caps new mirror creations at MAX_CREATE_PER_RUN = 50 per run to stay well below GitHub Secondary Rate Limits.
+3. Enforces a 2.5-second sleep between write API calls and caps new mirror creations at MAX_CREATE_PER_RUN = 200 per run to stay well below GitHub Secondary Rate Limits.
 4. Tracks body SHA256 hashes in an embedded HTML marker to detect and log upstream body edits.
 """
 
@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 
 UPSTREAM_REPO = os.environ.get("UPSTREAM_REPO", "Ebony-Vinyl/dsh-our-free-model")
 GH_TOKEN = os.environ.get("GH_TOKEN", "")
-MAX_CREATE_PER_RUN = 50
+MAX_CREATE_PER_RUN = 200
 WRITE_SLEEP_SECONDS = 2.5
 
 
